@@ -1,12 +1,12 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { Elements, Register } from 'claude-code'
 
 import type { ActivityKind, ViewMode, WorldState } from '../types'
 import type { AchievementId, Life } from './achievements'
 import { ACHIEVEMENTS, asLife, toastText } from './achievements'
 import type { Classified } from './activity'
 import { ACTIVITY_LABEL, classify } from './activity'
-import { downsample2, packCells, rasterize } from './render-raster'
+import { downsample2, drawMiniClawd, packCells, rasterize } from './render-raster'
 import { renderSvg } from './render-svg'
 import { composeScene } from './scene'
 import type { Outcome } from './world'
@@ -37,7 +37,7 @@ const SVG_LOOKAHEAD_MS = 120_000
 /** Terminal animation: one frame per this many ms. */
 const FRAME_MS = 125
 /** The terminal draws the world at half size, and its band is this many rows tall. */
-const TERMINAL_BAND_ROWS = 6
+const TERMINAL_BAND_ROWS = 11
 /** How much of their brightness the grass and dirt keep on the terminal's black. */
 const TERMINAL_GROUND_SHADE = 0.66
 
@@ -60,7 +60,7 @@ type Io = {
   storeSet: (key: string, value: unknown) => Promise<void>
   openPane: () => Promise<unknown>
   closePane: () => Promise<void>
-  after: (ms: number, fn: () => void) => () => void
+  after: (ms: number, fn: () => void) => { cancel: () => void }
 }
 
 // The module's own memory; a reload starts it over and session.start refills it.
@@ -71,7 +71,7 @@ let isLifeDirty = false
 let lastSave = 0
 let chain: Promise<unknown> = Promise.resolve()
 let isTicking = false
-let demo: (() => void)[] = []
+let demo: { cancel: () => void }[] = []
 /** The terminal Rasters on screen, by site, at the size each was drawn. */
 const mounts = new Map<string, { columns: number; rows: number }>()
 
@@ -205,14 +205,34 @@ function onExplosion() {
 
 // ---------- timers ----------
 
-/** A frame for a Raster `columns` x `rows`: the world drawn at twice that, then halved. */
-function terminalCells(w: WorldState, now: number, columns: number, rows: number): string {
+/** Where the terminal writes the tag over Clawd's head, in cells. */
+type CellTag = { text: string; column: number; row: number }
+
+/**
+ * A frame for a Raster `columns` x `rows`: the world drawn at twice that and
+ * halved, Clawd drawn on top with his own small sprite; and where his tag goes.
+ */
+function terminalFrame(w: WorldState, now: number, columns: number, rows: number): { cells: string; tag?: CellTag } {
   const W = columns * 2
   const H = rows * 4
   const mask = new Uint8Array(W * H)
-  const full = rasterize(composeScene(w, now, W, H, 0), now, { mask, groundShade: TERMINAL_GROUND_SHADE })
+  const scene = composeScene(w, now, W, H, 0)
+  const full = rasterize(scene, now, { mask, groundShade: TERMINAL_GROUND_SHADE, isClawdSkipped: true })
+  const half = downsample2(full, mask, W, H)
+  drawMiniClawd(scene, now, half, columns, rows * 2)
+  const t = scene.tag
+  // The tag sits 2 world pixels over Clawd's head, and he is 10 tall: his feet are at t.y + 12.
+  // Halved, the 7-pixel mini sprite stands on them; the tag goes in the cell row above its top.
+  const miniTop = (t ? t.y + 12 : 0) / 2 - 7
+  const tag = t
+    ? { text: ` ${t.text} `, column: Math.round(t.x / 2 - 1.5), row: Math.max(0, Math.floor(miniTop / 2) - 1) }
+    : undefined
 
-  return packCells(downsample2(full, mask, W, H), columns, rows * 2, columns, rows)
+  return { cells: packCells(half, columns, rows * 2, columns, rows), tag }
+}
+
+function terminalCells(w: WorldState, now: number, columns: number, rows: number): string {
+  return terminalFrame(w, now, columns, rows).cells
 }
 
 async function tick() {
@@ -298,12 +318,32 @@ function rasterProps(w: WorldState, now: number, requestId: string, columns: num
     ? clamp(Math.min(TERMINAL_BAND_ROWS, rowsAvailable - 1), 4, TERMINAL_BAND_ROWS)
     : clamp(rowsAvailable, 4, 20)
   mounts.set(requestId, { columns: cols, rows })
+  const frame = terminalFrame(w, now, cols, rows)
 
-  return { key: RASTER_KEY, columns: cols, rows, cells: terminalCells(w, now, cols, rows) }
+  return { raster: { key: RASTER_KEY, columns: cols, rows, cells: frame.cells }, tag: frame.tag }
+}
+
+/** The terminal's drawing: the world, and Clawd's tag laid over it in a pale box. */
+function terminalTree(els: Elements['terminal'], props: ReturnType<typeof rasterProps>) {
+  const { Box, Raster, Text } = els
+  const { raster, tag } = props
+
+  return (
+    <Box width={raster.columns} height={raster.rows}>
+      <Raster {...raster} />
+      {tag && (
+        <Box position="absolute" top={tag.row} left={Math.max(0, tag.column - Math.floor(tag.text.length / 2))}>
+          <Text color="#1b1b1b" backgroundColor="#e8e8e8">
+            {tag.text}
+          </Text>
+        </Box>
+      )}
+    </Box>
+  )
 }
 
 function svgProps(w: WorldState, now: number, columns: number, isBand: boolean) {
-  const H = isBand ? 48 : 64
+  const H = isBand ? 56 : 72
   const W = Math.ceil(clamp(columns * 8, 240, 2400) / SVG_SCALE)
   const scene = composeScene(w, now, W, H, SVG_LOOKAHEAD_MS)
 
@@ -370,8 +410,8 @@ const C = (kind: ActivityKind, success?: Classified['success'], tag?: Classified
 })
 
 function stopDemo() {
-  for (const cancel of demo) {
-    cancel()
+  for (const timer of demo) {
+    timer.cancel()
   }
   if (demo.length > 0) {
     io?.status(undefined)
@@ -380,10 +420,11 @@ function stopDemo() {
 }
 
 const DEMO: [number, string, (w: WorldState, now: number) => WorldState | null][] = [
-  [0, 'a turn begins, Clawd is thinking', (w, t) => turnStart(w, t)],
-  [1500, 'the model is writing, Clawd walks', (w, t) => setActivity(w, 'walk', t)],
+  [0, 'Claude thinks: Clawd mines the block ahead', (w, t) => turnStart(w, t)],
+  [2600, 'the thought ends: the block breaks, Clawd walks on', (w, t) => setActivity(w, 'walk', t)],
   [3500, 'WebFetch: fetching data = fishing', (w, t) => startTool(w, 'demo-1', C('fish'), t)],
   [6500, 'caught a fish!', (w, t) => endTool(w, 'demo-1', C('fish', 'catch'), 'ok', t)],
+  [6800, 'thinking again: a new block', (w, t) => setActivity(w, 'think', t)],
   [8000, 'Grep: searching = mining', (w, t) => startTool(w, 'demo-2', C('mine'), t)],
   [10500, 'found a diamond!', (w, t) => endTool(w, 'demo-2', C('mine', 'diamond'), 'ok', t)],
   [11500, 'Read: reading a file = a book on the lectern', (w, t) => startTool(w, 'demo-3', C('read'), t)],
@@ -513,6 +554,30 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Each model request is a thought: Clawd mines one block from the moment it is sent
+  // until the answer's first words, when the block breaks and he walks on.
+  on('turn.step', async function* ($, e, next) {
+    const stream = next(e)
+    if (e.agentId !== undefined) {
+      return yield* stream
+    }
+    void mutate((w, now) =>
+      !w.isWorking || w.running.length > 0 || w.activity === 'think' || w.activity === 'hurt'
+        ? null
+        : setActivity(w, 'think', now),
+    )
+    let isWriting = false
+    for await (const chunk of stream) {
+      if (!isWriting && chunk.kind === 'text') {
+        isWriting = true
+        void mutate((w, now) => (w.activity === 'think' ? setActivity(w, 'walk', now) : null))
+      }
+      yield chunk
+    }
+
+    return await stream.result
+  })
+
   on('tool.call', async ($, e, next) => {
     if (e.agentId !== undefined) {
       const w = cache
@@ -568,7 +633,7 @@ export const register: Register = on => {
     }
     void mutate((w, now) => setActivity(w, 'compost', now))
     const done = await next(e)
-    void mutate((w, now) => (w.activity === 'compost' ? setActivity(w, w.isWorking ? 'think' : 'idle', now) : null))
+    void mutate((w, now) => (w.activity === 'compost' ? setActivity(w, w.isWorking ? 'walk' : 'idle', now) : null))
 
     return done
   })
@@ -630,9 +695,7 @@ export const register: Register = on => {
     cache = w
     const now = await $.clock.now()
     if (e.surface === 'terminal') {
-      const { Raster } = $.ui.resolve(e)
-
-      return <Raster {...rasterProps(w, now, e.requestId, e.props.bodyColumns, e.props.maxRows, true)} />
+      return terminalTree($.ui.resolve(e), rasterProps(w, now, e.requestId, e.props.bodyColumns, e.props.maxRows, true))
     }
     const { Svg } = $.ui.resolve(e)
 
@@ -644,9 +707,10 @@ export const register: Register = on => {
     cache = w
     const now = await $.clock.now()
     if (e.surface === 'terminal') {
-      const { Raster } = $.ui.resolve(e)
-
-      return <Raster {...rasterProps(w, now, e.requestId, e.props.bodyColumns, e.props.scroll.bodyRows, false)} />
+      return terminalTree(
+        $.ui.resolve(e),
+        rasterProps(w, now, e.requestId, e.props.bodyColumns, e.props.scroll.bodyRows, false),
+      )
     }
     const { Svg } = $.ui.resolve(e)
 

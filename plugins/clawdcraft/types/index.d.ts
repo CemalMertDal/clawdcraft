@@ -34,6 +34,7 @@ export type EffectKind =
   | 'bone'
   | 'howl'
   | 'sunrise'
+  | 'break'
 
 export type MarkKind =
   | 'pond'

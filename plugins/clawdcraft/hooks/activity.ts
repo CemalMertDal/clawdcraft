@@ -88,7 +88,29 @@ export function classify(tool: string, input: Record<string, unknown>): Classifi
   return { kind: 'craft', success: 'item' }
 }
 
-/** What each activity is called on screen. */
+/** The tag over Clawd's head: what Claude is doing, in a word; none while resting. */
+export const TAG: Record<ActivityKind, string | null> = {
+  idle: null,
+  walk: 'working…',
+  think: 'thinking…',
+  fish: 'fetching…',
+  mine: 'searching…',
+  read: 'reading…',
+  craft: 'editing…',
+  build: 'writing…',
+  smelt: 'running…',
+  test: 'testing…',
+  chest: 'committing…',
+  rocket: 'pushing…',
+  magic: 'casting…',
+  plan: 'planning…',
+  wait: 'waiting for you…',
+  compost: 'compacting…',
+  hurt: 'ouch!',
+  sleep: 'zzz',
+}
+
+/** What each activity is called in `/mc stats` and the drawing's alt text. */
 export const ACTIVITY_LABEL: Record<ActivityKind, string> = {
   idle: 'resting',
   walk: 'walking',

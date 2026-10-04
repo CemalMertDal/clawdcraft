@@ -4,7 +4,7 @@ import type { ActivityKind, WorldState } from '../types'
 import { classify } from './activity'
 import { base64, downsample2, packCells, rasterize } from './render-raster'
 import { renderSvg } from './render-svg'
-import { composeScene } from './scene'
+import { composeScene, crackStage } from './scene'
 import { RAW_NAMES, hasColor, rawRows } from './sprites'
 import {
   BLOCK,
@@ -13,6 +13,7 @@ import {
   buildTerrain,
   cameraAt,
   markIndex,
+  wallAt,
   endTool,
   goSleep,
   initialWorld,
@@ -105,9 +106,50 @@ describe('world', () => {
     for (const H of [20, 48, 64]) {
       const L = layoutFor(300, H)
       const { tiles } = buildTerrain(11, L, -40, 900, markIndex(w.marks, T0 + 10_000))
-      // Every column is a surface block at groundBase and its filler right below.
+      // Every column's rows start at groundBase and step down a block at a time.
       const rows = [...new Set(tiles.map(t => t.y))].sort((a, b) => a - b)
-      expect(rows).toEqual(L.groundBase + BLOCK < H ? [L.groundBase, L.groundBase + BLOCK] : [L.groundBase])
+      expect(rows[0]).toBe(L.groundBase)
+      rows.forEach((y, i) => expect(y).toBe(L.groundBase + i * BLOCK))
+    }
+  })
+
+  test('below the grass and dirt lies stone, with ores in it', () => {
+    const L = layoutFor(300, 64)
+    const { tiles } = buildTerrain(5, L, 0, 400, new Map())
+    const deep = tiles.filter(t => t.y >= L.groundBase + 2 * BLOCK).map(t => t.tex)
+    expect(deep.includes('tex_stone')).toBe(true)
+    expect(deep.some(t => t === 'tex_coal' || t === 'tex_iron' || t === 'tex_gold' || t === 'tex_ore')).toBe(true)
+  })
+
+  test('one thought mines one block: Clawd stands, and the block breaks when it ends', () => {
+    let w = turnStart(initialWorld(9, 0, T0), T0)
+    expect(w.activity).toBe('think')
+    expect(w.speed).toBe(0)
+    const block = w.anchor
+    expect(block * BLOCK > posAt(w, T0) + 6).toBe(true)
+    w = setActivity(w, 'walk', T0 + 20_000)
+    expect(w.effects.some(e => e.kind === 'break' && Math.floor(e.x / BLOCK) === block)).toBe(true)
+    expect(w.speed > 0).toBe(true)
+    // A tool stops him; a new thought picks a new block further on.
+    w = startTool(w, 'r', classify('Read', {}), T0 + 22_000)
+    expect(w.speed).toBe(0)
+    w = endTool(w, 'r', classify('Read', {}), 'ok', T0 + 22_500)
+    expect(w.activity).toBe('walk')
+    w = setActivity(w, 'think', T0 + 23_000)
+    expect(w.anchor > block).toBe(true)
+  })
+
+  test('cracks grow with the thought, fast then slow, and hold before the break', () => {
+    const stages = [0, 1000, 3000, 6000, 15_000, 60_000, 3_600_000].map(crackStage)
+    stages.forEach((s, i) => expect(s >= (stages[i - 1] ?? 0)).toBe(true))
+    expect(crackStage(6000)).toBe(5)
+    expect(crackStage(3_600_000)).toBe(9)
+    expect(crackStage(500) < 2).toBe(true)
+  })
+
+  test('the block mined at a column is the same every time', () => {
+    for (let i = 0; i < 200; i++) {
+      expect(wallAt(3, i)).toBe(wallAt(3, i))
     }
   })
 
@@ -167,7 +209,7 @@ describe('world', () => {
     w = startTool(w, 't', classify('Grep', {}), T0 + 2000)
     expect(posAt(w, T0 + 9000)).toBe(24)
     w = endTool(w, 't', classify('Grep', {}), 'ok', T0 + 9000)
-    expect(w.activity).toBe('think')
+    expect(w.activity).toBe('walk')
     expect(w.effects.some(e => e.kind === 'diamond')).toBe(true)
   })
 
@@ -275,12 +317,18 @@ const bandProps = (bodyColumns: number) => ({
 
 describe('in a session', () => {
   test('the band draws a Raster on the terminal and an Svg on the desktop', async ($, on) => {
-    mock.clock(on, { now: T0 })
+    const clock = mock.clock(on, { now: T0 })
     mock.store(on)
     on('session.start', () => ({ cwd: '/' }))
+    on('turn.start', ($, e) => ({ turnId: e.turnId }))
     await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await clock.settle()
+    await $.turn.start({ text: 'hi', turnId: 't1' })
+    await clock.settle()
     const t = await $.ui.mount({ plugin: 'clawdcraft', surface: 'terminal', component: 'AbovePrompt', props: bandProps(100) })
-    expect((await t.drawn()).type).toBe('Raster')
+    expect(await t.find({ type: 'Raster' })).toBeDefined()
+    // A turn just began, so Clawd is thinking: his tag is drawn over the world.
+    expect((await t.find({ type: 'Text', text: /thinking/ })) === undefined).toBe(false)
     await t.unmount()
     const d = await $.ui.mount({ plugin: 'clawdcraft', surface: 'desktop', component: 'AbovePrompt', props: bandProps(120) })
     expect((await d.drawn()).type).toBe('Svg')

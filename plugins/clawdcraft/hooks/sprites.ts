@@ -33,7 +33,7 @@ const PALETTE: Record<string, number> = {
   // mycelium
   P: 0x7d6a82, Z: 0xa08db0,
   // ores, magic, fire, smoke
-  E: 0x5fe3e0, '6': 0x2a9d8f,
+  E: 0x5fe3e0, '6': 0x2a9d8f, I: 0xd8af93,
   '1': 0xffd23f, '2': 0xff8c1a, '3': 0xd93a1e, '4': 0x8e44ad, '5': 0xd2a6ee,
   '8': 0xc9c9c9, '9': 0x555555, '0': 0x24202a,
 }
@@ -230,6 +230,36 @@ const RAW = {
     'uuuuuuuu',
     'uuuQuuuu',
   ],
+  tex_coal: [
+    'sstsssSs',
+    'sKKsssss',
+    'sKKsSKss',
+    'tssSsKKs',
+    'ssssssSs',
+    'sSKKssss',
+    'ssKKsSst',
+    'stsSssss',
+  ],
+  tex_iron: [
+    'sstsssSs',
+    'sIIsssss',
+    'sIesSIss',
+    'tssSsIIs',
+    'ssssssSs',
+    'sSIIssss',
+    'ssIesSst',
+    'stsSssss',
+  ],
+  tex_gold: [
+    'sstsssSs',
+    's11sssss',
+    's1zsS1ss',
+    'tssSs11s',
+    'ssssssSs',
+    'sS11ssss',
+    'ss1zsSst',
+    'stsSssss',
+  ],
   tex_crater: [
     '0D9dD90D',
     'D9DdD0dD',
@@ -311,6 +341,53 @@ const RAW = {
     '..oooooooo..',
     '..OOOOOOOO..',
     '.OO......OO.',
+  ],
+
+  // ---- Clawd for the terminal (9x7): drawn at its own size, not halved ----
+  mini_clawd_idle: [
+    '.ooooooo.',
+    '.oKoooKo.',
+    '.oKoooKo.',
+    'ooooooooo',
+    '.ooooooo.',
+    '.OOOOOOO.',
+    '.o.o.o.o.',
+  ],
+  mini_clawd_step: [
+    '.ooooooo.',
+    '.oKoooKo.',
+    '.oKoooKo.',
+    'ooooooooo',
+    '.ooooooo.',
+    '.OOOOOOO.',
+    '..o.o.o.o',
+  ],
+  mini_clawd_blink: [
+    '.ooooooo.',
+    '.ooooooo.',
+    '.oKoooKo.',
+    'ooooooooo',
+    '.ooooooo.',
+    '.OOOOOOO.',
+    '.o.o.o.o.',
+  ],
+  mini_clawd_cheer: [
+    'o.ooooo.o',
+    'ooKoooKoo',
+    '.oKoooKo.',
+    '.ooooooo.',
+    '.ooooooo.',
+    '.OOOOOOO.',
+    '.o.o.o.o.',
+  ],
+  mini_clawd_sleep: [
+    '.........',
+    '.........',
+    '.ooooooo.',
+    '.oKKoKKo.',
+    'ooooooooo',
+    '.OOOOOOO.',
+    'OO.....OO',
   ],
 
   // ---- creeper (6x11) ----
@@ -686,16 +763,44 @@ const RAW = {
   fungus: ['.HHH.', 'HH1HH', '..T..', '..T..'],
 } as const satisfies Record<string, readonly string[]>
 
-export type SpriteName = keyof typeof RAW | 'clawd_hurt' | 'creeper_flash'
+type Tinted = 'clawd_hurt' | 'mini_clawd_hurt' | 'creeper_flash'
+/** A block's cracks as it is mined, stage 0 (a scratch) to 9 (about to break). */
+export type CrackName = `crack${0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`
+export type SpriteName = keyof typeof RAW | Tinted | CrackName
 export type TextureName = Extract<SpriteName, `tex_${string}`>
 
 /** Decoded pixels: `px[y * w + x]` is 0xRRGGBB, or -1 where transparent. */
 export type Pixels = { w: number; h: number; px: Int32Array }
 
 /** Sprites made from others by blending every pixel toward one color. */
-const TINTED: Record<'clawd_hurt' | 'creeper_flash', [keyof typeof RAW, number, number]> = {
+const TINTED: Record<Tinted, [keyof typeof RAW, number, number]> = {
   clawd_hurt: ['clawd_idle', 0xff2a2a, 0.55],
+  mini_clawd_hurt: ['mini_clawd_idle', 0xff2a2a, 0.55],
   creeper_flash: ['creeper', 0xffffff, 0.8],
+}
+
+/** The order cracks spread across an 8x8 block, from its middle outward. */
+const CRACK_PATH: readonly [number, number][] = [
+  [3, 3], [4, 4], [4, 3], [2, 2], [5, 5], [1, 2], [5, 2], [6, 1], [2, 5], [1, 6],
+  [6, 6], [0, 1], [7, 0], [3, 5], [2, 6], [0, 7], [6, 4], [7, 4], [5, 6], [6, 7],
+  [1, 3], [0, 4], [4, 1], [4, 0], [3, 6], [7, 6], [2, 0], [1, 0],
+]
+
+function crack(stage: number): Pixels {
+  const px = new Int32Array(64).fill(-1)
+  const shown = Math.round((CRACK_PATH.length * 0.7 * (stage + 1)) / 10)
+  for (const [x, y] of CRACK_PATH.slice(0, shown)) {
+    px[y * 8 + x] = 0x1a1618
+  }
+
+  return { w: 8, h: 8, px }
+}
+
+/** The mini sprite drawn for a full-size one on the terminal, if there is one. */
+export function miniOf(name: SpriteName): SpriteName | undefined {
+  const mini = `mini_${name}`
+
+  return mini in RAW || mini === 'mini_clawd_hurt' ? (mini as SpriteName) : undefined
 }
 
 const decoded = new Map<SpriteName, Pixels>()
@@ -729,7 +834,9 @@ export function sprite(name: SpriteName): Pixels {
     return hit
   }
   let out: Pixels
-  if (name === 'clawd_hurt' || name === 'creeper_flash') {
+  if (name.startsWith('crack')) {
+    out = crack(Number(name.slice(5)))
+  } else if (name === 'clawd_hurt' || name === 'mini_clawd_hurt' || name === 'creeper_flash') {
     const [base, color, k] = TINTED[name]
     const src = sprite(base)
     const px = new Int32Array(src.px.length)
@@ -739,7 +846,7 @@ export function sprite(name: SpriteName): Pixels {
     }
     out = { w: src.w, h: src.h, px }
   } else {
-    out = decodeRaw(RAW[name])
+    out = decodeRaw(RAW[name as keyof typeof RAW])
   }
   decoded.set(name, out)
 

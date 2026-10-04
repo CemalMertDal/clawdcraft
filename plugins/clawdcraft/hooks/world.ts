@@ -114,7 +114,7 @@ export type Layout = {
 }
 
 export function layoutFor(W: number, H: number): Layout {
-  const groundDepth = H >= 40 ? 16 : 8
+  const groundDepth = H >= 40 ? 24 : 8
 
   return { W, H, groundBase: H - groundDepth, lo: Math.round(Math.max(24, Math.min(W * 0.3, 120))) }
 }
@@ -142,6 +142,61 @@ export function markIndex(marks: readonly WorldMark[], now: number): Map<number,
   return index
 }
 
+/** What lies `row` blocks down (2 and below): stone, or netherrack, with the odd ore. */
+export function deepAt(seed: number, biome: Biome, i: number, row: number): TextureName {
+  const r = hash(seed, i, 40 + row)
+  if (biome === 'nether') {
+    return r < 0.06 ? 'tex_gold' : 'tex_netherrack'
+  }
+  if (r < 0.05) {
+    return 'tex_coal'
+  }
+  if (r < 0.08) {
+    return 'tex_iron'
+  }
+  if (r < 0.095) {
+    return 'tex_gold'
+  }
+
+  return r < 0.105 ? 'tex_ore' : 'tex_stone'
+}
+
+/** The block Clawd mines while thinking at column `i`: the biome's wood or ground, sometimes stone or ore. */
+export function wallAt(seed: number, i: number): TextureName {
+  const biome = biomeAt(seed, i)
+  const r = hash(seed, i, 61)
+  if (biome === 'nether') {
+    return r < 0.15 ? 'tex_gold' : 'tex_netherrack'
+  }
+  if (r < 0.12) {
+    return 'tex_stone'
+  }
+  if (r < 0.17) {
+    return 'tex_coal'
+  }
+  if (r < 0.2) {
+    return 'tex_iron'
+  }
+  if (r < 0.22) {
+    return 'tex_gold'
+  }
+  if (r < 0.235) {
+    return 'tex_ore'
+  }
+  switch (biome) {
+    case 'desert':
+      return r < 0.6 ? 'tex_sandstone' : 'tex_sand'
+    case 'taiga':
+      return r < 0.6 ? 'tex_log' : 'tex_snow'
+    case 'mushroom':
+      return r < 0.6 ? 'tex_stem' : 'tex_cap'
+    case 'forest':
+      return r < 0.45 ? 'tex_birch' : 'tex_log'
+    default:
+      return r < 0.7 ? 'tex_log' : 'tex_dirt'
+  }
+}
+
 /** The y of the ground's top at column `i`: the same everywhere, the world is flat. */
 export function groundFn(L: Layout): (i: number) => number {
   return () => L.groundBase
@@ -165,8 +220,18 @@ export function buildTerrain(
   const tiles: Tile[] = []
   const structures: Tile[] = []
   const decor: Decor[] = []
-  let prevTop: Tile | null = null
-  let prevFill: Tile | null = null
+  // The last tile laid in each row, which the next column extends when it matches.
+  const open = new Map<number, Tile>()
+  const lay = (x: number, y: number, h: number, tex: TextureName) => {
+    const prev = open.get(y)
+    if (prev && prev.tex === tex && prev.h === h && prev.x + prev.w === x) {
+      prev.w += BLOCK
+    } else {
+      const t = { x, y, w: BLOCK, h, tex }
+      tiles.push(t)
+      open.set(y, t)
+    }
+  }
 
   for (let c = from; c <= to; c++) {
     const biome = biomeAt(seed, c)
@@ -184,23 +249,10 @@ export function buildTerrain(
       top = 'tex_lava'
     }
     const x = c * BLOCK
-    if (prevTop && prevTop.tex === top && prevTop.y === gy && prevTop.x + prevTop.w === x) {
-      prevTop.w += BLOCK
-    } else {
-      prevTop = { x, y: gy, w: BLOCK, h: BLOCK, tex: top }
-      tiles.push(prevTop)
-    }
-    const fillY = gy + BLOCK
-    const fillH = Math.max(0, L.H - fillY)
-    if (fillH > 0) {
-      if (prevFill && prevFill.tex === filler && prevFill.y === fillY && prevFill.x + prevFill.w === x) {
-        prevFill.w += BLOCK
-      } else {
-        prevFill = { x, y: fillY, w: BLOCK, h: fillH, tex: filler }
-        tiles.push(prevFill)
-      }
-    } else {
-      prevFill = null
+    // Surface, one block of filler, then stone (netherrack in the Nether) with ores.
+    for (let y = gy, row = 0; y < L.H; y += BLOCK, row++) {
+      const h = Math.min(BLOCK, L.H - y)
+      lay(x, y, h, row === 0 ? top : row === 1 ? filler : deepAt(seed, biome, c, row))
     }
 
     const isClear = !index.has(c - 1) && !marks && !index.has(c + 1) && top === surface
@@ -343,10 +395,18 @@ function addEffect(effects: readonly WorldEffect[], kind: EffectKind, x: number,
 }
 
 export function setActivity(w: WorldState, kind: ActivityKind, now: number): WorldState {
-  const c = commit(w, now)
+  let c = commit(w, now)
   const pos = c.distanceAt
-  const speed = kind === 'walk' || kind === 'think' ? WALK_SPEED : 0
+  // Clawd walks while Claude writes; he stands to think (mining) and to work a tool.
+  const speed = kind === 'walk' ? WALK_SPEED : 0
   let anchor = c.anchor
+  // A thought that ends breaks the block it was mining, and the way on is clear.
+  if (c.activity === 'think' && kind !== 'think') {
+    c = { ...c, effects: addEffect(c.effects, 'break', c.anchor * BLOCK + 4, now) }
+  }
+  if (kind === 'think') {
+    anchor = colOf(pos + 7) + 1
+  }
   let marks = c.marks
   const markKind = MARK_OF[kind]
   if (markKind) {
@@ -387,7 +447,7 @@ function resume(w: WorldState, now: number): WorldState {
     return setActivity(w, last.kind, now)
   }
 
-  return setActivity(w, w.isWorking ? 'think' : 'idle', now)
+  return setActivity(w, w.isWorking ? 'walk' : 'idle', now)
 }
 
 export function startTool(w: WorldState, id: string, cls: Classified, now: number): WorldState {

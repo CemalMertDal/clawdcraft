@@ -187,6 +187,17 @@ export function renderSvg(scene: Scene, now: number, opts: SvgOptions): string {
   if (isInCam) {
     body.push('</g>')
   }
+  if (scene.tag) {
+    // A pale box over Clawd's head with what he is doing, as a sign would read.
+    const { text, x, y } = scene.tag
+    const w = text.length * 3 + 4
+    const safe = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    body.push(
+      `<g transform="translate(${r2(x - w / 2)},${r2(y - 7)})">` +
+        `<rect width="${w}" height="7" fill="#ececec" stroke="#2b2b2b" stroke-width="0.5"/>` +
+        `<text x="${w / 2}" y="5.2" font-family="monospace" font-size="5" fill="#1b1b1b" text-anchor="middle">${safe}</text></g>`,
+    )
+  }
 
   const defs: string[] = [
     `<linearGradient id="${ns}sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${hex(scene.skyTop)}"/><stop offset="1" stop-color="${hex(scene.skyBottom)}"/></linearGradient>`,

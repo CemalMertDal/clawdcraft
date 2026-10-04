@@ -4,7 +4,7 @@
 
 import type { Scene } from './scene'
 import { frameAt, sample } from './scene'
-import { blend, sprite } from './sprites'
+import { blend, miniOf, sprite } from './sprites'
 import type { Tile } from './world'
 
 const UPPER_HALF = 0x2580
@@ -14,6 +14,8 @@ export type RasterOptions = {
   groundShade?: number
   /** Filled with 1 where something was drawn over the sky, for `downsample2`. */
   mask?: Uint8Array
+  /** Leaves Clawd out, for `drawMiniClawd` to draw after halving. */
+  isClawdSkipped?: boolean
 }
 
 export function rasterize(scene: Scene, now: number, opts: RasterOptions = {}): Uint32Array {
@@ -58,7 +60,7 @@ export function rasterize(scene: Scene, now: number, opts: RasterOptions = {}): 
   const drawActorsBelow = (z: number) => {
     for (; i < actors.length && (actors[i]?.z ?? 0) < z; i++) {
       const a = actors[i]
-      if (!a) {
+      if (!a || (a.isClawd && opts.isClawdSkipped)) {
         continue
       }
       const m = sample(a.motion, now)
@@ -108,6 +110,39 @@ export function rasterize(scene: Scene, now: number, opts: RasterOptions = {}): 
   drawActorsBelow(Number.POSITIVE_INFINITY)
 
   return buf
+}
+
+/**
+ * Draws Clawd into a halved buffer with his own small sprite (9x7), standing
+ * where the full-size one would: a halved Clawd loses his face.
+ */
+export function drawMiniClawd(scene: Scene, now: number, buf: Uint32Array, w: number, h: number) {
+  for (const a of scene.actors) {
+    const name = a.isClawd ? frameAt(a, now) : undefined
+    const mini = name ? miniOf(name) : undefined
+    if (!name || !mini) {
+      continue
+    }
+    const m = sample(a.motion, now)
+    if (m.o < 0.5) {
+      continue
+    }
+    const full = sprite(name)
+    const s = sprite(mini)
+    // Right edges line up, so the wider mini sprite never covers what stands in front of him.
+    const ox = Math.round((a.x + full.w + m.x) / 2 - s.w)
+    const oy = Math.round((a.y + full.h + m.y) / 2 - s.h)
+    for (let sy = 0; sy < s.h; sy++) {
+      for (let sx = 0; sx < s.w; sx++) {
+        const x = ox + sx
+        const y = oy + sy
+        const c = s.px[sy * s.w + (a.flip ? s.w - 1 - sx : sx)] ?? -1
+        if (c >= 0 && x >= 0 && x < w && y >= 0 && y < h) {
+          buf[y * w + x] = c
+        }
+      }
+    }
+  }
 }
 
 const luma = (c: number) => ((c >> 16) & 255) * 0.3 + ((c >> 8) & 255) * 0.59 + (c & 255) * 0.11

@@ -17,7 +17,9 @@ import {
   markIndex,
   nightness,
   posAt,
+  wallAt,
 } from './world'
+import { TAG } from './activity'
 
 /** One keyframe: at phase `p`, offset by `x`, `y`, at opacity `o`. */
 export type Key = { p: number; x: number; y: number; o: number }
@@ -42,8 +44,13 @@ export type Actor = {
   motion?: Motion
   /** Part of the ground (grass tufts, flowers): shaded with it where the ground is dimmed. */
   isGround?: boolean
+  /** Clawd himself: the terminal draws his own small sprite here instead of halving this one. */
+  isClawd?: boolean
   z: number
 }
+
+/** The word over Clawd's head, centred on `x` with its bottom at `y` (screen world pixels). */
+export type Tag = { text: string; x: number; y: number }
 
 export type Scene = {
   W: number
@@ -51,6 +58,7 @@ export type Scene = {
   /** Camera's world x at `now`; `camera`, when it will move, its keyframes (x = -camera). */
   camX: number
   camera?: Motion
+  tag?: Tag
   now: number
   skyTop: number
   skyBottom: number
@@ -61,6 +69,28 @@ export type Scene = {
 }
 
 const k = (p: number, x = 0, y = 0, o = 1): Key => ({ p, x, y, o })
+
+/** How long a thought takes to crack a block halfway; cracks slow as they go, never quite done. */
+export const CRACK_HALF_MS = 6000
+
+/** The crack stage `ms` into a thought: quick at first, then ever slower, holding at 9. */
+export function crackStage(ms: number): number {
+  const done = 1 - Math.exp((-Math.max(0, ms) * Math.LN2) / CRACK_HALF_MS)
+
+  return Math.min(9, Math.floor(done * 10))
+}
+
+/** Crack frames at 2 fps over two minutes, the last held: what both renderers play. */
+function crackFrames(): SpriteName[] {
+  return Array.from({ length: 240 }, (_, i) => `crack${crackStage(i * 500)}` as SpriteName)
+}
+
+/** A few of a block's own colors, for the chips it throws. */
+function blockColors(tex: SpriteName): number[] {
+  const px = sprite(tex).px
+
+  return [px[9] ?? 0x8c8c8c, px[27] ?? 0x6a6a6a, px[45] ?? 0xa8a8a8]
+}
 
 /** A motion that waits `delay` ms after `start`, hidden or held on its first key. */
 function delayed(start: number, delay: number, dur: number, keys: Key[], isHiddenBefore = true): Motion {
@@ -301,7 +331,7 @@ export function composeScene(w: WorldState, now: number, W: number, H: number, l
   // ---- Clawd ----
   const gy = ground(colOf(pos))
   const cy = gy - 10
-  const clawd: Actor = { space: 'screen', x: screenX - 6, y: cy, frames: IDLE_FRAMES, fps: 3, z: 40 }
+  const clawd: Actor = { space: 'screen', x: screenX - 6, y: cy, frames: IDLE_FRAMES, fps: 3, isClawd: true, z: 40 }
   const ax = w.anchor * BLOCK
   const ag = ground(w.anchor)
   switch (w.activity) {
@@ -309,18 +339,18 @@ export function composeScene(w: WorldState, now: number, W: number, H: number, l
       clawd.frames = WALK_FRAMES
       clawd.fps = 6
       break
-    case 'think':
-      clawd.frames = WALK_FRAMES
-      clawd.fps = 3
-      add({
-        space: 'screen',
-        x: screenX + 3,
-        y: cy - 8,
-        frames: ['bubble1', 'bubble2', 'bubble3'],
-        fps: 2,
-        z: 46,
-      })
+    case 'think': {
+      // One thought, one block: a two-block wall ahead cracks for as long as the thought lasts.
+      const tex = wallAt(w.seed, w.anchor)
+      const cracks = crackFrames()
+      for (const y of [ag - 2 * BLOCK, ag - BLOCK]) {
+        add({ space: 'world', x: ax, y, frames: [tex], z: 21 })
+        add({ space: 'world', x: ax, y, frames: cracks, fps: 2, frameLoop: false, frameStart: w.activityAt, z: 22 })
+      }
+      add({ space: 'world', x: pos + 4, y: cy - 4, frames: ['pick_up', 'pick_down'], fps: 3, z: 45 })
+      stream({ x: ax + 1, y: ag - 9, n: 3, dx: -5, dy: -4, colors: blockColors(tex), dur: 600 })
       break
+    }
     case 'sleep':
       clawd.frames = ['clawd_sleep']
       for (let i = 0; i < 2; i++) {
@@ -714,16 +744,25 @@ export function composeScene(w: WorldState, now: number, W: number, H: number, l
       case 'howl':
         burst({ x: e.x, y: eg - 4, n: 8, dist: 8, colors: [0xffffff, 0xc9c9c9], size: 2, start: e.at, dur: 600, salt })
         break
+      case 'break': {
+        const colors = blockColors(wallAt(w.seed, colOf(e.x)))
+        burst({ x: e.x, y: eg - 8, n: 10, dist: 10, colors, size: 2, start: e.at, dur: 700, up: 4, fall: 8, salt })
+        break
+      }
     }
   }
 
   actors.sort((a, b) => a.z - b.z)
+
+  const text = TAG[w.activity]
+  const tag: Tag | undefined = text ? { text, x: screenX, y: cy - 2 } : undefined
 
   return {
     W,
     H,
     camX,
     camera,
+    tag,
     now,
     skyTop,
     skyBottom,
