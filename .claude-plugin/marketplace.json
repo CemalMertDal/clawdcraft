@@ -5,14 +5,14 @@
     "url": "https://github.com/CemalMertDal"
   },
   "metadata": {
-    "description": "ClawdCraft: Claude Code'un yaptıklarını 2D Minecraft dünyasında canlandıran mod."
+    "description": "ClawdCraft: a Claude Code mod that shows what Claude is doing as a little 2D Minecraft world."
   },
   "plugins": [
     {
       "name": "clawdcraft",
       "source": "./plugins/clawdcraft",
-      "description": "Claude'un yaptıklarını 2D Minecraft dünyasında yürüyen Clawd ile canlandırır: veri çekerken balık tutar, hatada creeper patlar.",
-      "version": "0.1.0",
+      "description": "Watch Claude work in a 2D Minecraft world: Clawd fishes while fetching data, mines while searching, and a creeper blows up when something fails.",
+      "version": "0.2.0",
       "author": {
         "name": "CemalMertDal",
         "url": "https://github.com/CemalMertDal"

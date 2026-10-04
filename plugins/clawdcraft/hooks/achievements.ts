@@ -15,20 +15,20 @@ export type AchievementId =
   | 'bookworm'
 
 export const ACHIEVEMENTS: Record<AchievementId, { name: string; desc: string }> = {
-  'stone-age': { name: 'Taş Devri', desc: 'İlk aracını kullandın' },
-  'gone-fishing': { name: 'Balık Tutmaya Gittik', desc: 'İlk veriyi çektin' },
-  'aw-man': { name: 'Aw Man', desc: 'İlk creeper patlaması' },
-  diamonds: { name: 'Elmas!', desc: 'Bir oturumda 50 araç' },
-  apprentice: { name: 'Büyücü Çırağı', desc: 'İlk Skill büyüsü' },
-  'best-friend': { name: 'Sadık Dost', desc: 'İlk kurt yoldaş (subagent)' },
-  pack: { name: 'Kurt Sürüsü', desc: 'Aynı anda 3 kurt' },
-  fireworks: { name: 'Havai Fişek', desc: 'İlk git push' },
-  'long-road': { name: 'Uzun Yol', desc: 'Toplam 1000 blok yürüdün' },
-  nether: { name: "Nether'e Hoş Geldin", desc: 'Nether biyomuna ulaştın' },
-  'sweet-dreams': { name: 'İyi Uykular', desc: 'İlk gece uykusu' },
-  survivor: { name: 'Hayatta Kalan', desc: '25 araç üst üste hatasız' },
-  'creeper-hunter': { name: 'Creeper Avcısı', desc: 'Toplam 10 patlama' },
-  bookworm: { name: 'Kitap Kurdu', desc: 'Toplam 100 dosya okudun' },
+  'stone-age': { name: 'Stone Age', desc: 'Used your first tool' },
+  'gone-fishing': { name: 'Gone Fishing', desc: 'Fetched your first data' },
+  'aw-man': { name: 'Aw Man', desc: 'Your first creeper explosion' },
+  diamonds: { name: 'Diamonds!', desc: '50 tools in one session' },
+  apprentice: { name: "Sorcerer's Apprentice", desc: 'Cast your first Skill' },
+  'best-friend': { name: 'Best Friends Forever', desc: 'Your first wolf companion (subagent)' },
+  pack: { name: 'Wolf Pack', desc: '3 wolves at once' },
+  fireworks: { name: 'Fireworks', desc: 'Your first git push' },
+  'long-road': { name: 'The Long Road', desc: 'Walked 1000 blocks in total' },
+  nether: { name: 'Welcome to the Nether', desc: 'Reached the Nether biome' },
+  'sweet-dreams': { name: 'Sweet Dreams', desc: 'Slept through your first night' },
+  survivor: { name: 'Survivor', desc: '25 tools in a row without an error' },
+  'creeper-hunter': { name: 'Creeper Hunter', desc: '10 explosions in total' },
+  bookworm: { name: 'Bookworm', desc: 'Read 100 files in total' },
 }
 
 /** What is kept across sessions, under the store's `life` key. */
@@ -72,5 +72,5 @@ export function asLife(value: unknown, seed: number): Life {
 export function toastText(id: AchievementId): string {
   const a = ACHIEVEMENTS[id]
 
-  return `🏆 Başarım kazanıldı! ${a.name}: ${a.desc}`
+  return `🏆 Advancement made! ${a.name}: ${a.desc}`
 }

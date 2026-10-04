@@ -279,7 +279,7 @@ describe('in a session', () => {
     await clock.settle()
     const d = await $.ui.mount({ plugin: 'clawdcraft', surface: 'desktop', component: 'AbovePrompt', props: bandProps(120) })
     const drawn = JSON.stringify(await d.drawn())
-    expect(drawn).toContain('creeper yedi')
+    expect(drawn).toContain('recovering from a creeper')
     expect(drawn).toContain('creeper_flash')
     expect(logs).toEqual([])
   })

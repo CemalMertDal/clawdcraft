@@ -281,7 +281,7 @@ async function housekeep() {
 function describe(w: WorldState, now: number): string {
   const pos = posAt(w, now)
 
-  return `Clawd ${BIOME_LABEL[biomeAt(w.seed, colOf(pos))]} biyomunda ${ACTIVITY_LABEL[w.activity]} (${colOf(pos)}. blok)`
+  return `Clawd is ${ACTIVITY_LABEL[w.activity]} in the ${BIOME_LABEL[biomeAt(w.seed, colOf(pos))]} (block ${colOf(pos)})`
 }
 
 /** The Raster's size for a site, remembered so the timer can repaint it. */
@@ -328,13 +328,13 @@ function stats(w: WorldState, now: number): string {
   const ids = Object.keys(ACHIEVEMENTS) as AchievementId[]
   const got = ids.filter(id => l?.unlocked.includes(id))
   const lines = [
-    `ClawdCraft: Clawd ${BIOME_LABEL[biomeAt(w.seed, colOf(pos))]} biyomunda, ${colOf(pos)}. blokta, ${ACTIVITY_LABEL[w.activity]}.`,
-    `Bu oturum: ${w.tools} araç, ${w.explosions} creeper patlaması, şu anki hatasız seri ${w.streak}.`,
+    `ClawdCraft: Clawd is ${ACTIVITY_LABEL[w.activity]} in the ${BIOME_LABEL[biomeAt(w.seed, colOf(pos))]}, at block ${colOf(pos)}.`,
+    `This session: ${w.tools} tools, ${w.explosions} creeper explosions, current error-free streak ${w.streak}.`,
   ]
   if (l) {
-    lines.push(`Toplam: ${l.tools} araç, ${l.fish} balık, ${l.reads} okuma, ${l.explosions} patlama, ${l.nights} gece.`)
+    lines.push(`All time: ${l.tools} tools, ${l.fish} fish, ${l.reads} reads, ${l.explosions} explosions, ${l.nights} nights.`)
   }
-  lines.push(`Başarımlar (${got.length}/${ids.length}):`)
+  lines.push(`Advancements (${got.length}/${ids.length}):`)
   for (const id of ids) {
     const a = ACHIEVEMENTS[id]
     lines.push(`  ${got.includes(id) ? '✓' : '·'} ${a.name}: ${a.desc}`)
@@ -344,14 +344,14 @@ function stats(w: WorldState, now: number): string {
 }
 
 const HELP = [
-  'ClawdCraft komutları:',
-  '  /mc          şerit ile panel arasında geçiş',
-  "  /mc band     prompt'un üstünde şerit",
-  '  /mc pane     yan panel',
-  '  /mc hide     gizle',
-  '  /mc stats    yolculuk ve başarımlar',
-  '  /mc demo     bütün animasyonları sırayla oynat',
-  '  /mc yeni     yeni bir dünya tohumu',
+  'ClawdCraft commands:',
+  '  /mc          switch between the band and the side pane',
+  '  /mc band     show the world in a band above the prompt',
+  '  /mc pane     show the world in a side pane',
+  '  /mc hide     hide it',
+  '  /mc stats    the journey so far and advancements',
+  '  /mc demo     play every animation in turn',
+  '  /mc new      start a new world from a new seed',
 ].join('\n')
 
 const C = (kind: ActivityKind, success?: Classified['success'], tag?: Classified['tag']): Classified => ({
@@ -371,41 +371,41 @@ function stopDemo() {
 }
 
 const DEMO: [number, string, (w: WorldState, now: number) => WorldState | null][] = [
-  [0, 'tur başlıyor, Clawd düşünüyor', (w, t) => turnStart(w, t)],
-  [1500, 'model yazıyor, Clawd yürüyor', (w, t) => setActivity(w, 'walk', t)],
-  [3500, 'WebFetch: veri çekme = balık tutma', (w, t) => startTool(w, 'demo-1', C('fish'), t)],
-  [6500, 'balık yakalandı!', (w, t) => endTool(w, 'demo-1', C('fish', 'catch'), 'ok', t)],
-  [8000, 'Grep: arama = maden kazma', (w, t) => startTool(w, 'demo-2', C('mine'), t)],
-  [10500, 'elmas bulundu!', (w, t) => endTool(w, 'demo-2', C('mine', 'diamond'), 'ok', t)],
-  [11500, 'Read: dosya okuma = kürsüde kitap', (w, t) => startTool(w, 'demo-3', C('read'), t)],
+  [0, 'a turn begins, Clawd is thinking', (w, t) => turnStart(w, t)],
+  [1500, 'the model is writing, Clawd walks', (w, t) => setActivity(w, 'walk', t)],
+  [3500, 'WebFetch: fetching data = fishing', (w, t) => startTool(w, 'demo-1', C('fish'), t)],
+  [6500, 'caught a fish!', (w, t) => endTool(w, 'demo-1', C('fish', 'catch'), 'ok', t)],
+  [8000, 'Grep: searching = mining', (w, t) => startTool(w, 'demo-2', C('mine'), t)],
+  [10500, 'found a diamond!', (w, t) => endTool(w, 'demo-2', C('mine', 'diamond'), 'ok', t)],
+  [11500, 'Read: reading a file = a book on the lectern', (w, t) => startTool(w, 'demo-3', C('read'), t)],
   [
     13500,
-    'Edit: düzenleme = çalışma masası',
+    'Edit: editing = the crafting table',
     (w, t) => startTool(endTool(w, 'demo-3', C('read'), 'ok', t), 'demo-4', C('craft'), t),
   ],
-  [16000, 'eşya yapıldı', (w, t) => endTool(w, 'demo-4', C('craft', 'item'), 'ok', t)],
-  [16500, 'Write: yeni dosya = blok yerleştirme', (w, t) => startTool(w, 'demo-5', C('build'), t)],
+  [16000, 'item crafted', (w, t) => endTool(w, 'demo-4', C('craft', 'item'), 'ok', t)],
+  [16500, 'Write: a new file = placing a block', (w, t) => startTool(w, 'demo-5', C('build'), t)],
   [
     18000,
-    'bir blok daha',
+    'one more block',
     (w, t) => startTool(endTool(w, 'demo-5', C('build', 'block'), 'ok', t), 'demo-6', C('build'), t),
   ],
-  [19500, 'yapı büyüyor', (w, t) => endTool(w, 'demo-6', C('build', 'block'), 'ok', t)],
-  [20000, 'Bash: komut = fırın', (w, t) => startTool(w, 'demo-7', C('smelt'), t)],
-  [23000, 'komut bitti', (w, t) => endTool(w, 'demo-7', C('smelt'), 'ok', t)],
-  [23500, 'Skill: büyü masası', (w, t) => startTool(w, 'demo-8', C('magic'), t)],
-  [26500, 'büyü tamam!', (w, t) => endTool(w, 'demo-8', C('magic', 'sparkle'), 'ok', t)],
-  [27000, 'Agent: subagent = kurt yoldaş', (w, t) => startTool(w, 'demo-9', C('walk', undefined, 'agent'), t)],
-  [28500, 'testler = hedefe ok', (w, t) => startTool(w, 'demo-10', C('test'), t)],
-  [31000, 'tam isabet!', (w, t) => endTool(w, 'demo-10', C('test', 'bullseye'), 'ok', t)],
-  [32000, 'kurt görevini bitirdi, kemik getirdi', (w, t) => endTool(w, 'demo-9', C('walk', undefined, 'agent'), 'ok', t)],
-  [33000, 'izin bekleniyor', (w, t) => setActivity(w, 'wait', t)],
-  [35000, 'bir komut hata verdi…', (w, t) => startTool(w, 'demo-11', C('smelt'), t)],
-  [35600, 'creeper geliyor!', (w, t) => endTool(w, 'demo-11', C('smelt'), 'error', t)],
-  [40000, 'git push = havai fişek', (w, t) => startTool(w, 'demo-12', C('rocket'), t)],
-  [41500, 'fırlatıldı!', (w, t) => endTool(w, 'demo-12', C('rocket', 'firework'), 'ok', t)],
-  [44000, 'tur bitti, meşale dikildi', (w, t) => turnEnd(w, 'answer', 30_000, t)],
-  [46500, 'gece çöktü, Clawd uyuyor', (w, t) => setActivity({ ...w, idleSince: t - IDLE_NIGHT_MS - 9000 }, 'sleep', t)],
+  [19500, 'the build grows', (w, t) => endTool(w, 'demo-6', C('build', 'block'), 'ok', t)],
+  [20000, 'Bash: a command = the furnace', (w, t) => startTool(w, 'demo-7', C('smelt'), t)],
+  [23000, 'command done', (w, t) => endTool(w, 'demo-7', C('smelt'), 'ok', t)],
+  [23500, 'Skill: the enchanting table', (w, t) => startTool(w, 'demo-8', C('magic'), t)],
+  [26500, 'spell cast!', (w, t) => endTool(w, 'demo-8', C('magic', 'sparkle'), 'ok', t)],
+  [27000, 'Agent: a subagent = a wolf companion', (w, t) => startTool(w, 'demo-9', C('walk', undefined, 'agent'), t)],
+  [28500, 'tests = arrows at a target', (w, t) => startTool(w, 'demo-10', C('test'), t)],
+  [31000, 'bullseye!', (w, t) => endTool(w, 'demo-10', C('test', 'bullseye'), 'ok', t)],
+  [32000, 'the wolf is done and brings a bone', (w, t) => endTool(w, 'demo-9', C('walk', undefined, 'agent'), 'ok', t)],
+  [33000, 'waiting for permission', (w, t) => setActivity(w, 'wait', t)],
+  [35000, 'a command failed…', (w, t) => startTool(w, 'demo-11', C('smelt'), t)],
+  [35600, 'here comes a creeper!', (w, t) => endTool(w, 'demo-11', C('smelt'), 'error', t)],
+  [40000, 'git push = fireworks', (w, t) => startTool(w, 'demo-12', C('rocket'), t)],
+  [41500, 'launched!', (w, t) => endTool(w, 'demo-12', C('rocket', 'firework'), 'ok', t)],
+  [44000, 'the turn is over, a torch goes up', (w, t) => turnEnd(w, 'answer', 30_000, t)],
+  [46500, 'night falls, Clawd sleeps', (w, t) => setActivity({ ...w, idleSince: t - IDLE_NIGHT_MS - 9000 }, 'sleep', t)],
   [52000, '', () => null],
 ]
 
@@ -448,8 +448,8 @@ export const register: Register = on => {
     try {
       await $.command.register({
         name: 'mc',
-        description: "ClawdCraft: Claude'un Minecraft dünyası (band, pane, hide, stats, demo)",
-        argumentHint: '[band|pane|hide|stats|demo|yeni]',
+        description: "ClawdCraft: Claude's Minecraft world (band, pane, hide, stats, demo)",
+        argumentHint: '[band|pane|hide|stats|demo|new]',
       })
     } catch (err) {
       debug(err)
@@ -579,22 +579,17 @@ export const register: Register = on => {
     switch (arg) {
       case '':
         await setView(current === 'pane' ? 'band' : 'pane')
-        return { text: current === 'pane' ? 'ClawdCraft şeride taşındı.' : 'ClawdCraft panelde açıldı.' }
+        return { text: current === 'pane' ? 'ClawdCraft moved to the band.' : 'ClawdCraft opened in a pane.' }
       case 'band':
-      case 'serit':
-      case 'şerit':
         await setView('band')
-        return { text: "ClawdCraft prompt'un üstünde." }
+        return { text: 'ClawdCraft is above the prompt.' }
       case 'pane':
-      case 'panel':
         await setView('pane')
-        return { text: 'ClawdCraft panelde açıldı.' }
+        return { text: 'ClawdCraft opened in a pane.' }
       case 'hide':
-      case 'gizle':
         await setView('hidden')
-        return { text: 'ClawdCraft gizlendi. Geri getirmek için /mc band.' }
+        return { text: 'ClawdCraft is hidden. Bring it back with /mc band.' }
       case 'stats':
-      case 'istatistik':
         return { text: stats(await read($, world), await $.clock.now()) }
       case 'demo':
         if (current === 'hidden') {
@@ -602,9 +597,8 @@ export const register: Register = on => {
         }
         runDemo()
         return {
-          text: 'Demo başladı: ~50 saniye boyunca bütün animasyonlar sırayla oynayacak. Durum satırı hangisinin oynadığını söyler.',
+          text: 'Demo started: for about 50 seconds every animation plays in turn. The status line says which one is playing.',
         }
-      case 'yeni':
       case 'new': {
         const seed = randomSeed()
         counted(l => {
@@ -612,7 +606,7 @@ export const register: Register = on => {
           l.distance = 0
         })
         await mutate((_, now) => initialWorld(seed, 0, now))
-        return { text: 'Yeni bir dünya oluşturuldu.' }
+        return { text: 'A new world has been created.' }
       }
       default:
         return { text: HELP }

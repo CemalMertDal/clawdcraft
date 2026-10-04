@@ -19,11 +19,11 @@ export const NETHER_FROM = 1500
 export type Biome = 'plains' | 'forest' | 'desert' | 'taiga' | 'mushroom' | 'nether'
 
 export const BIOME_LABEL: Record<Biome, string> = {
-  plains: 'Çayır',
-  forest: 'Orman',
-  desert: 'Çöl',
-  taiga: 'Karlı Tayga',
-  mushroom: 'Mantar Adası',
+  plains: 'Plains',
+  forest: 'Forest',
+  desert: 'Desert',
+  taiga: 'Snowy Taiga',
+  mushroom: 'Mushroom Fields',
   nether: 'Nether',
 }
 
