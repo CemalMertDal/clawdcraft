@@ -1,0 +1,24 @@
+{
+  "name": "clawdcraft",
+  "owner": {
+    "name": "CemalMertDal",
+    "url": "https://github.com/CemalMertDal"
+  },
+  "metadata": {
+    "description": "ClawdCraft: Claude Code'un yaptıklarını 2D Minecraft dünyasında canlandıran mod."
+  },
+  "plugins": [
+    {
+      "name": "clawdcraft",
+      "source": "./plugins/clawdcraft",
+      "description": "Claude'un yaptıklarını 2D Minecraft dünyasında yürüyen Clawd ile canlandırır: veri çekerken balık tutar, hatada creeper patlar.",
+      "version": "0.1.0",
+      "author": {
+        "name": "CemalMertDal",
+        "url": "https://github.com/CemalMertDal"
+      },
+      "keywords": ["minecraft", "mascot", "animation", "fun", "mod"],
+      "category": "fun"
+    }
+  ]
+}

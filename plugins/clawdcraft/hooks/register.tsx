@@ -1,0 +1,652 @@
+import { atom, read, update } from 'claude-code'
+import type { Register } from 'claude-code'
+
+import type { ActivityKind, ViewMode, WorldState } from '../types'
+import type { AchievementId, Life } from './achievements'
+import { ACHIEVEMENTS, asLife, toastText } from './achievements'
+import type { Classified } from './activity'
+import { ACTIVITY_LABEL, classify } from './activity'
+import { packCells, rasterize } from './render-raster'
+import { renderSvg } from './render-svg'
+import { composeScene } from './scene'
+import type { Outcome } from './world'
+import {
+  BIOME_LABEL,
+  BLOCK,
+  IDLE_NIGHT_MS,
+  biomeAt,
+  colOf,
+  endTool,
+  goSleep,
+  initialWorld,
+  posAt,
+  prune,
+  recover,
+  refreshWalk,
+  setActivity,
+  startTool,
+  turnEnd,
+  turnStart,
+} from './world'
+
+const PANE = 'clawdcraft'
+const RASTER_KEY = 'world'
+/** CSS pixels per world pixel on the vector surfaces, and how far ahead a walk is drawn. */
+const SVG_SCALE = 3
+const SVG_LOOKAHEAD_MS = 120_000
+/** Terminal animation: one frame per this many ms. */
+const FRAME_MS = 125
+
+const WORLD_REF = { plugin: 'clawdcraft', key: 'world' } as const
+const VIEW_REF = { plugin: 'clawdcraft', key: 'view' } as const
+const world = atom(WORLD_REF, initialWorld(1, 0, 0))
+const view = atom(VIEW_REF, 'band')
+
+/** What the timers and the event hooks reach the engine through, made in session.start. */
+type Io = {
+  now: () => Promise<number>
+  read: () => Promise<WorldState>
+  write: (change: (w: WorldState) => WorldState) => Promise<WorldState>
+  setView: (v: ViewMode) => Promise<ViewMode>
+  blit: (requestId: string, cells: string, columns: number, rows: number) => Promise<boolean>
+  toast: (text: string) => void
+  status: (text: string | undefined) => void
+  log: (text: string) => void
+  storeGet: (key: string) => Promise<unknown>
+  storeSet: (key: string, value: unknown) => Promise<void>
+  openPane: () => Promise<unknown>
+  closePane: () => Promise<void>
+  after: (ms: number, fn: () => void) => () => void
+}
+
+// The module's own memory; a reload starts it over and session.start refills it.
+let io: Io | null = null
+let cache: WorldState | null = null
+let life: Life | null = null
+let isLifeDirty = false
+let lastSave = 0
+let chain: Promise<unknown> = Promise.resolve()
+let isTicking = false
+let demo: (() => void)[] = []
+/** The terminal Rasters on screen, by site, at the size each was drawn. */
+const mounts = new Map<string, { columns: number; rows: number }>()
+
+const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.floor(n)))
+
+function debug(err: unknown) {
+  try {
+    io?.log(`clawdcraft: ${err instanceof Error ? err.message : String(err)}`)
+  } catch {
+    // nothing to tell it to
+  }
+}
+
+/**
+ * Applies `change` to the world, one change at a time; `null` writes
+ * nothing (so the drawings stay as they are).
+ */
+function mutate(change: (w: WorldState, now: number) => WorldState | null): Promise<void> {
+  const d = io
+  if (!d) {
+    return Promise.resolve()
+  }
+  const run = chain
+    .then(async () => {
+      const now = await d.now()
+      const current = await d.read()
+      if (change(current, now) === null) {
+        cache = current
+        return
+      }
+      cache = await d.write(w => change(w, now) ?? w)
+    })
+    .catch(debug)
+  chain = run
+
+  return run
+}
+
+// ---------- the life across sessions ----------
+
+function randomSeed(): number {
+  return Math.floor(Math.random() * 0x7fffffff)
+}
+
+async function saveLife(now: number) {
+  if (!io || !life || !isLifeDirty) {
+    return
+  }
+  isLifeDirty = false
+  lastSave = now
+  await io.storeSet('life', life)
+}
+
+function unlock(id: AchievementId) {
+  if (!life || life.unlocked.includes(id)) {
+    return
+  }
+  life.unlocked = [...life.unlocked, id]
+  isLifeDirty = true
+  io?.toast(toastText(id))
+}
+
+function counted(fn: (l: Life) => void) {
+  if (life) {
+    fn(life)
+    isLifeDirty = true
+  }
+}
+
+function onToolStart(cls: Classified) {
+  counted(l => {
+    l.tools += 1
+    if (cls.kind === 'read') {
+      l.reads += 1
+    }
+  })
+  unlock('stone-age')
+  if (cls.tag === 'fetch') {
+    unlock('gone-fishing')
+  }
+  if (cls.tag === 'skill') {
+    unlock('apprentice')
+  }
+  if (cls.tag === 'agent') {
+    unlock('best-friend')
+  }
+  if ((life?.reads ?? 0) >= 100) {
+    unlock('bookworm')
+  }
+  const w = cache
+  if (w) {
+    if (w.tools + 1 >= 50) {
+      unlock('diamonds')
+    }
+    if (cls.tag === 'agent' && w.wolves.filter(f => !f.leftAt).length + 1 >= 3) {
+      unlock('pack')
+    }
+  }
+}
+
+function onToolEnd(cls: Classified, outcome: Outcome) {
+  if (outcome === 'error') {
+    onExplosion()
+    return
+  }
+  if (outcome !== 'ok') {
+    return
+  }
+  if (cls.success === 'catch') {
+    counted(l => {
+      l.fish += 1
+    })
+  }
+  if (cls.tag === 'push') {
+    unlock('fireworks')
+  }
+  if ((cache?.streak ?? 0) + 1 >= 25) {
+    unlock('survivor')
+  }
+}
+
+function onExplosion() {
+  counted(l => {
+    l.explosions += 1
+  })
+  unlock('aw-man')
+  if ((life?.explosions ?? 0) >= 10) {
+    unlock('creeper-hunter')
+  }
+}
+
+// ---------- timers ----------
+
+function terminalCells(w: WorldState, now: number, columns: number, rows: number): string {
+  const H = rows * 2
+  const scene = composeScene(w, now, columns, H, 0)
+
+  return packCells(rasterize(scene, now), columns, H, columns, rows)
+}
+
+async function tick() {
+  const w = cache
+  const d = io
+  if (isTicking || mounts.size === 0 || !w || !d) {
+    return
+  }
+  isTicking = true
+  try {
+    const now = await d.now()
+    for (const [requestId, m] of [...mounts]) {
+      const isTaken = await d.blit(requestId, terminalCells(w, now, m.columns, m.rows), m.columns, m.rows)
+      if (!isTaken) {
+        mounts.delete(requestId)
+      }
+    }
+  } catch (err) {
+    debug(err)
+  } finally {
+    isTicking = false
+  }
+}
+
+async function housekeep() {
+  const w = cache
+  const d = io
+  if (!w || !d) {
+    return
+  }
+  const now = await d.now()
+  const steps = [recover, goSleep, refreshWalk, prune]
+  if (steps.some(step => step(w, now) !== null)) {
+    const isFallingAsleep = goSleep(w, now) !== null
+    await mutate((cur, t) => {
+      let n = cur
+      let isChanged = false
+      for (const step of steps) {
+        const r = step(n, t)
+        if (r) {
+          n = r
+          isChanged = true
+        }
+      }
+
+      return isChanged ? n : null
+    })
+    if (isFallingAsleep) {
+      counted(l => {
+        l.nights += 1
+      })
+      unlock('sweet-dreams')
+    }
+  }
+  const pos = posAt(w, now)
+  if (life && Math.abs(life.distance - pos) >= BLOCK) {
+    life.distance = pos
+    isLifeDirty = true
+  }
+  if (pos >= 1000 * BLOCK) {
+    unlock('long-road')
+  }
+  if (biomeAt(w.seed, colOf(pos)) === 'nether') {
+    unlock('nether')
+  }
+  if (now - lastSave > 30_000) {
+    await saveLife(now)
+  }
+}
+
+// ---------- drawing ----------
+
+function describe(w: WorldState, now: number): string {
+  const pos = posAt(w, now)
+
+  return `Clawd ${BIOME_LABEL[biomeAt(w.seed, colOf(pos))]} biyomunda ${ACTIVITY_LABEL[w.activity]} (${colOf(pos)}. blok)`
+}
+
+/** The Raster's size for a site, remembered so the timer can repaint it. */
+function rasterProps(w: WorldState, now: number, requestId: string, columns: number, rowsAvailable: number, isBand: boolean) {
+  const cols = clamp(columns, 16, 512)
+  const rows = isBand ? clamp(Math.min(10, rowsAvailable - 1), 4, 10) : clamp(rowsAvailable, 4, 32)
+  mounts.set(requestId, { columns: cols, rows })
+
+  return { key: RASTER_KEY, columns: cols, rows, cells: terminalCells(w, now, cols, rows) }
+}
+
+function svgProps(w: WorldState, now: number, columns: number, isBand: boolean) {
+  const H = isBand ? 48 : 64
+  const W = Math.ceil(clamp(columns * 8, 240, 2400) / SVG_SCALE)
+  const scene = composeScene(w, now, W, H, SVG_LOOKAHEAD_MS)
+
+  return {
+    source: renderSvg(scene, now, { scale: SVG_SCALE }),
+    alt: describe(w, now),
+    width: W * SVG_SCALE,
+    height: H * SVG_SCALE,
+    isInteractive: true as const,
+  }
+}
+
+// ---------- the /mc command ----------
+
+async function setView(v: ViewMode) {
+  if (!io) {
+    return
+  }
+  await io.setView(v)
+  await io.storeSet('view', v)
+  if (v === 'pane') {
+    await io.openPane()
+  } else {
+    await io.closePane()
+  }
+}
+
+function stats(w: WorldState, now: number): string {
+  const l = life
+  const pos = posAt(w, now)
+  const ids = Object.keys(ACHIEVEMENTS) as AchievementId[]
+  const got = ids.filter(id => l?.unlocked.includes(id))
+  const lines = [
+    `ClawdCraft: Clawd ${BIOME_LABEL[biomeAt(w.seed, colOf(pos))]} biyomunda, ${colOf(pos)}. blokta, ${ACTIVITY_LABEL[w.activity]}.`,
+    `Bu oturum: ${w.tools} araç, ${w.explosions} creeper patlaması, şu anki hatasız seri ${w.streak}.`,
+  ]
+  if (l) {
+    lines.push(`Toplam: ${l.tools} araç, ${l.fish} balık, ${l.reads} okuma, ${l.explosions} patlama, ${l.nights} gece.`)
+  }
+  lines.push(`Başarımlar (${got.length}/${ids.length}):`)
+  for (const id of ids) {
+    const a = ACHIEVEMENTS[id]
+    lines.push(`  ${got.includes(id) ? '✓' : '·'} ${a.name}: ${a.desc}`)
+  }
+
+  return lines.join('\n')
+}
+
+const HELP = [
+  'ClawdCraft komutları:',
+  '  /mc          şerit ile panel arasında geçiş',
+  "  /mc band     prompt'un üstünde şerit",
+  '  /mc pane     yan panel',
+  '  /mc hide     gizle',
+  '  /mc stats    yolculuk ve başarımlar',
+  '  /mc demo     bütün animasyonları sırayla oynat',
+  '  /mc yeni     yeni bir dünya tohumu',
+].join('\n')
+
+const C = (kind: ActivityKind, success?: Classified['success'], tag?: Classified['tag']): Classified => ({
+  kind,
+  success,
+  tag,
+})
+
+function stopDemo() {
+  for (const cancel of demo) {
+    cancel()
+  }
+  if (demo.length > 0) {
+    io?.status(undefined)
+  }
+  demo = []
+}
+
+const DEMO: [number, string, (w: WorldState, now: number) => WorldState | null][] = [
+  [0, 'tur başlıyor, Clawd düşünüyor', (w, t) => turnStart(w, t)],
+  [1500, 'model yazıyor, Clawd yürüyor', (w, t) => setActivity(w, 'walk', t)],
+  [3500, 'WebFetch: veri çekme = balık tutma', (w, t) => startTool(w, 'demo-1', C('fish'), t)],
+  [6500, 'balık yakalandı!', (w, t) => endTool(w, 'demo-1', C('fish', 'catch'), 'ok', t)],
+  [8000, 'Grep: arama = maden kazma', (w, t) => startTool(w, 'demo-2', C('mine'), t)],
+  [10500, 'elmas bulundu!', (w, t) => endTool(w, 'demo-2', C('mine', 'diamond'), 'ok', t)],
+  [11500, 'Read: dosya okuma = kürsüde kitap', (w, t) => startTool(w, 'demo-3', C('read'), t)],
+  [
+    13500,
+    'Edit: düzenleme = çalışma masası',
+    (w, t) => startTool(endTool(w, 'demo-3', C('read'), 'ok', t), 'demo-4', C('craft'), t),
+  ],
+  [16000, 'eşya yapıldı', (w, t) => endTool(w, 'demo-4', C('craft', 'item'), 'ok', t)],
+  [16500, 'Write: yeni dosya = blok yerleştirme', (w, t) => startTool(w, 'demo-5', C('build'), t)],
+  [
+    18000,
+    'bir blok daha',
+    (w, t) => startTool(endTool(w, 'demo-5', C('build', 'block'), 'ok', t), 'demo-6', C('build'), t),
+  ],
+  [19500, 'yapı büyüyor', (w, t) => endTool(w, 'demo-6', C('build', 'block'), 'ok', t)],
+  [20000, 'Bash: komut = fırın', (w, t) => startTool(w, 'demo-7', C('smelt'), t)],
+  [23000, 'komut bitti', (w, t) => endTool(w, 'demo-7', C('smelt'), 'ok', t)],
+  [23500, 'Skill: büyü masası', (w, t) => startTool(w, 'demo-8', C('magic'), t)],
+  [26500, 'büyü tamam!', (w, t) => endTool(w, 'demo-8', C('magic', 'sparkle'), 'ok', t)],
+  [27000, 'Agent: subagent = kurt yoldaş', (w, t) => startTool(w, 'demo-9', C('walk', undefined, 'agent'), t)],
+  [28500, 'testler = hedefe ok', (w, t) => startTool(w, 'demo-10', C('test'), t)],
+  [31000, 'tam isabet!', (w, t) => endTool(w, 'demo-10', C('test', 'bullseye'), 'ok', t)],
+  [32000, 'kurt görevini bitirdi, kemik getirdi', (w, t) => endTool(w, 'demo-9', C('walk', undefined, 'agent'), 'ok', t)],
+  [33000, 'izin bekleniyor', (w, t) => setActivity(w, 'wait', t)],
+  [35000, 'bir komut hata verdi…', (w, t) => startTool(w, 'demo-11', C('smelt'), t)],
+  [35600, 'creeper geliyor!', (w, t) => endTool(w, 'demo-11', C('smelt'), 'error', t)],
+  [40000, 'git push = havai fişek', (w, t) => startTool(w, 'demo-12', C('rocket'), t)],
+  [41500, 'fırlatıldı!', (w, t) => endTool(w, 'demo-12', C('rocket', 'firework'), 'ok', t)],
+  [44000, 'tur bitti, meşale dikildi', (w, t) => turnEnd(w, 'answer', 30_000, t)],
+  [46500, 'gece çöktü, Clawd uyuyor', (w, t) => setActivity({ ...w, idleSince: t - IDLE_NIGHT_MS - 9000 }, 'sleep', t)],
+  [52000, '', () => null],
+]
+
+function runDemo() {
+  stopDemo()
+  const d = io
+  if (!d) {
+    return
+  }
+  for (const [at, label, step] of DEMO) {
+    demo.push(
+      d.after(Math.max(1, at), () => {
+        d.status(label ? `ClawdCraft demo: ${label}` : undefined)
+        void mutate(step)
+      }),
+    )
+  }
+}
+
+// ---------- hooks ----------
+
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    io = {
+      now: () => $.clock.now(),
+      read: () => read($, world),
+      write: change => update($, world, change),
+      setView: v => update($, view, () => v),
+      blit: async (requestId, cells, columns, rows) =>
+        (await $.ui.blit({ requestId, key: RASTER_KEY, cells, columns, rows })).deny === undefined,
+      toast: text => $.ui.toast(text, { timeoutMs: 6000 }),
+      status: text => $.ui.status(text),
+      log: text => $.ui.log(text, { to: 'debug' }),
+      storeGet: key => $.store.get(key),
+      storeSet: (key, value) => $.store.set(key, value),
+      openPane: () => $.ui.open({ id: PANE, title: 'ClawdCraft', rows: 12 }),
+      closePane: () => $.ui.close({ id: PANE }),
+      after: (ms, fn) => $.clock.after(ms, fn),
+    }
+    try {
+      await $.command.register({
+        name: 'mc',
+        description: "ClawdCraft: Claude'un Minecraft dünyası (band, pane, hide, stats, demo)",
+        argumentHint: '[band|pane|hide|stats|demo|yeni]',
+      })
+    } catch (err) {
+      debug(err)
+    }
+    try {
+      const stored = await $.store.get('life')
+      life = life ?? asLife(stored, randomSeed())
+      if (!stored) {
+        await $.store.set('life', life)
+      }
+      const l = life
+      const now = await $.clock.now()
+      const current = await $.state.get(WORLD_REF)
+      if (current.version === 0) {
+        await mutate(() => initialWorld(l.seed, l.distance, now))
+      } else {
+        cache = current.value ?? null
+      }
+      const shown = await $.state.get(VIEW_REF)
+      if (shown.version === 0) {
+        const kept = await $.store.get('view')
+        if (kept === 'band' || kept === 'pane' || kept === 'hidden') {
+          await update($, view, () => kept)
+        }
+      }
+      if ((await read($, view)) === 'pane') {
+        void $.ui.open({ id: PANE, title: 'ClawdCraft', rows: 12 }).catch(debug)
+      }
+    } catch (err) {
+      debug(err)
+    }
+    $.clock.every(FRAME_MS, () => void tick())
+    $.clock.every(2000, () => void housekeep())
+
+    return next(e)
+  })
+
+  on('session.end', async ($, e, next) => {
+    try {
+      await saveLife(0)
+    } catch (err) {
+      debug(err)
+    }
+
+    return next(e)
+  })
+
+  on('turn.start', ($, e, next) => {
+    stopDemo()
+    void mutate((w, now) => turnStart(w, now))
+
+    return next(e)
+  })
+
+  on('tool.call', async ($, e, next) => {
+    if (e.agentId !== undefined) {
+      const w = cache
+      if (w && w.wolves.length > 0) {
+        void mutate((cur, now) => (now - cur.wolfBusyAt > 1200 ? { ...cur, wolfBusyAt: now } : null))
+      }
+
+      return next(e)
+    }
+    let cls: Classified = { kind: 'craft' }
+    try {
+      cls = classify(e.tool, e as unknown as Record<string, unknown>)
+      onToolStart(cls)
+    } catch (err) {
+      debug(err)
+    }
+    const id = e.tool_use_id
+    void mutate((w, now) => startTool(w, id, cls, now))
+    const ran = await next(e)
+    const outcome: Outcome = ran.deny !== undefined ? 'denied' : ran.isError === true ? 'error' : 'ok'
+    try {
+      onToolEnd(cls, outcome)
+    } catch (err) {
+      debug(err)
+    }
+    void mutate((w, now) => endTool(w, id, cls, outcome, now))
+
+    return ran
+  })
+
+  on('classic.PermissionRequest', ($, e, next) => {
+    void mutate((w, now) => (w.activity === 'wait' ? null : setActivity(w, 'wait', now)))
+
+    return next(e)
+  })
+
+  on('turn.complete', ($, e, next) => {
+    if (e.agentId === undefined) {
+      const reason = e.reason
+      const duration = e.durationMs
+      if (reason === 'error') {
+        onExplosion()
+      }
+      void mutate((w, now) => turnEnd(w, reason, duration, now))
+    }
+
+    return next(e)
+  })
+
+  on('session.compact', async ($, e, next) => {
+    if (e.agentId !== undefined) {
+      return next(e)
+    }
+    void mutate((w, now) => setActivity(w, 'compost', now))
+    const done = await next(e)
+    void mutate((w, now) => (w.activity === 'compost' ? setActivity(w, w.isWorking ? 'think' : 'idle', now) : null))
+
+    return done
+  })
+
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE && e.origin === 'person') {
+      await update($, view, () => 'band')
+      await $.store.set('view', 'band')
+    }
+
+    return next(e)
+  })
+
+  on('command.run', { command: 'mc' }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    const current = await read($, view)
+    switch (arg) {
+      case '':
+        await setView(current === 'pane' ? 'band' : 'pane')
+        return { text: current === 'pane' ? 'ClawdCraft şeride taşındı.' : 'ClawdCraft panelde açıldı.' }
+      case 'band':
+      case 'serit':
+      case 'şerit':
+        await setView('band')
+        return { text: "ClawdCraft prompt'un üstünde." }
+      case 'pane':
+      case 'panel':
+        await setView('pane')
+        return { text: 'ClawdCraft panelde açıldı.' }
+      case 'hide':
+      case 'gizle':
+        await setView('hidden')
+        return { text: 'ClawdCraft gizlendi. Geri getirmek için /mc band.' }
+      case 'stats':
+      case 'istatistik':
+        return { text: stats(await read($, world), await $.clock.now()) }
+      case 'demo':
+        if (current === 'hidden') {
+          await setView('band')
+        }
+        runDemo()
+        return {
+          text: 'Demo başladı: ~50 saniye boyunca bütün animasyonlar sırayla oynayacak. Durum satırı hangisinin oynadığını söyler.',
+        }
+      case 'yeni':
+      case 'new': {
+        const seed = randomSeed()
+        counted(l => {
+          l.seed = seed
+          l.distance = 0
+        })
+        await mutate((_, now) => initialWorld(seed, 0, now))
+        return { text: 'Yeni bir dünya oluşturuldu.' }
+      }
+      default:
+        return { text: HELP }
+    }
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || (await read($, view)) !== 'band') {
+      return next(e)
+    }
+    const w = await read($, world)
+    cache = w
+    const now = await $.clock.now()
+    if (e.surface === 'terminal') {
+      const { Raster } = $.ui.resolve(e)
+
+      return <Raster {...rasterProps(w, now, e.requestId, e.props.bodyColumns, e.props.maxRows, true)} />
+    }
+    const { Svg } = $.ui.resolve(e)
+
+    return <Svg {...svgProps(w, now, e.props.bodyColumns, true)} />
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const w = await read($, world)
+    cache = w
+    const now = await $.clock.now()
+    if (e.surface === 'terminal') {
+      const { Raster } = $.ui.resolve(e)
+
+      return <Raster {...rasterProps(w, now, e.requestId, e.props.bodyColumns, e.props.scroll.bodyRows, false)} />
+    }
+    const { Svg } = $.ui.resolve(e)
+
+    return <Svg {...svgProps(w, now, e.props.bodyColumns, false)} />
+  })
+}

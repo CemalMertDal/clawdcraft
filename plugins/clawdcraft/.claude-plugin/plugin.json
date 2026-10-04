@@ -1,0 +1,14 @@
+{
+  "name": "clawdcraft",
+  "version": "0.1.0",
+  "description": "Claude'un yaptıklarını 2D Minecraft dünyasında yürüyen Clawd ile canlandırır: veri çekerken balık tutar, hatada creeper patlar.",
+  "author": {
+    "name": "CemalMertDal",
+    "url": "https://github.com/CemalMertDal"
+  },
+  "homepage": "https://github.com/CemalMertDal/clawdcraft",
+  "repository": "https://github.com/CemalMertDal/clawdcraft",
+  "license": "MIT",
+  "keywords": ["minecraft", "mascot", "animation", "fun", "mod"],
+  "types": "./types/index.d.ts"
+}
