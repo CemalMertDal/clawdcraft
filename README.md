@@ -57,7 +57,7 @@ As Clawd walks, the biome changes every 64 blocks: plains, forest, desert, snowy
 
 - **No model tokens.** The mod never calls the model and adds nothing to the system prompt or the conversation. The one exception is the output of the `/mc` commands you run, which the model reads on the next turn. `/mc stats` is about 300–400 tokens.
 - **Offline.** Everything is drawn on your machine and no network requests are made. The journey and advancements are kept in Claude Code's plugin store.
-- **Desktop and terminal.** The desktop app gets animated SVG. The terminal gets pixel art made of half-block (`▀`) characters.
+- **Desktop and terminal.** The desktop app gets animated SVG. The terminal gets pixel art made of half-block (`▀`) characters, drawn at half size in a 6-row band with a dimmed ground so it sits quietly on a dark background.
 - **Early-access API.** The mod is built on Claude Code's function-hooks (mods) API, which may change between releases. Tested with Claude Code 2.1.286.
 
 ## Development

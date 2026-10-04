@@ -6,7 +6,7 @@ import type { AchievementId, Life } from './achievements'
 import { ACHIEVEMENTS, asLife, toastText } from './achievements'
 import type { Classified } from './activity'
 import { ACTIVITY_LABEL, classify } from './activity'
-import { packCells, rasterize } from './render-raster'
+import { downsample2, packCells, rasterize } from './render-raster'
 import { renderSvg } from './render-svg'
 import { composeScene } from './scene'
 import type { Outcome } from './world'
@@ -36,6 +36,10 @@ const SVG_SCALE = 3
 const SVG_LOOKAHEAD_MS = 120_000
 /** Terminal animation: one frame per this many ms. */
 const FRAME_MS = 125
+/** The terminal draws the world at half size, and its band is this many rows tall. */
+const TERMINAL_BAND_ROWS = 6
+/** How much of their brightness the grass and dirt keep on the terminal's black. */
+const TERMINAL_GROUND_SHADE = 0.66
 
 const WORLD_REF = { plugin: 'clawdcraft', key: 'world' } as const
 const VIEW_REF = { plugin: 'clawdcraft', key: 'view' } as const
@@ -201,11 +205,14 @@ function onExplosion() {
 
 // ---------- timers ----------
 
+/** A frame for a Raster `columns` x `rows`: the world drawn at twice that, then halved. */
 function terminalCells(w: WorldState, now: number, columns: number, rows: number): string {
-  const H = rows * 2
-  const scene = composeScene(w, now, columns, H, 0)
+  const W = columns * 2
+  const H = rows * 4
+  const mask = new Uint8Array(W * H)
+  const full = rasterize(composeScene(w, now, W, H, 0), now, { mask, groundShade: TERMINAL_GROUND_SHADE })
 
-  return packCells(rasterize(scene, now), columns, H, columns, rows)
+  return packCells(downsample2(full, mask, W, H), columns, rows * 2, columns, rows)
 }
 
 async function tick() {
@@ -287,7 +294,9 @@ function describe(w: WorldState, now: number): string {
 /** The Raster's size for a site, remembered so the timer can repaint it. */
 function rasterProps(w: WorldState, now: number, requestId: string, columns: number, rowsAvailable: number, isBand: boolean) {
   const cols = clamp(columns, 16, 512)
-  const rows = isBand ? clamp(Math.min(10, rowsAvailable - 1), 4, 10) : clamp(rowsAvailable, 4, 32)
+  const rows = isBand
+    ? clamp(Math.min(TERMINAL_BAND_ROWS, rowsAvailable - 1), 4, TERMINAL_BAND_ROWS)
+    : clamp(rowsAvailable, 4, 20)
   mounts.set(requestId, { columns: cols, rows })
 
   return { key: RASTER_KEY, columns: cols, rows, cells: terminalCells(w, now, cols, rows) }

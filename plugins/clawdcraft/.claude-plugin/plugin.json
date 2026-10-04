@@ -1,6 +1,6 @@
 {
   "name": "clawdcraft",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Watch Claude work in a 2D Minecraft world: Clawd fishes while fetching data, mines while searching, and a creeper blows up when something fails.",
   "author": {
     "name": "CemalMertDal",

@@ -40,6 +40,8 @@ export type Actor = {
   rect?: { w: number; h: number; color: number }
   flip?: boolean
   motion?: Motion
+  /** Part of the ground (grass tufts, flowers): shaded with it where the ground is dimmed. */
+  isGround?: boolean
   z: number
 }
 
@@ -275,7 +277,7 @@ export function composeScene(w: WorldState, now: number, W: number, H: number, l
 
   // ---- ground decorations and what Claude left behind ----
   for (const d of decor) {
-    add({ space: 'world', x: d.x, y: d.y, frames: [d.sprite], z: 15 })
+    add({ space: 'world', x: d.x, y: d.y, frames: [d.sprite], isGround: true, z: 15 })
   }
   for (const m of w.marks) {
     if (m.at > now || m.i < from - 2 || m.i > to + 2 || m.kind === 'pond' || m.kind === 'crater') {

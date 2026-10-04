@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import type { ActivityKind, WorldState } from '../types'
 import { classify } from './activity'
-import { base64, packCells, rasterize } from './render-raster'
+import { base64, downsample2, packCells, rasterize } from './render-raster'
 import { renderSvg } from './render-svg'
 import { composeScene } from './scene'
 import { RAW_NAMES, hasColor, rawRows } from './sprites'
@@ -27,6 +27,8 @@ import {
 
 const SVG_LIMIT = 131072
 const T0 = 1_000_000
+
+const luma = (c: number) => ((c >> 16) & 255) * 0.3 + ((c >> 8) & 255) * 0.59 + (c & 255) * 0.11
 
 /** A world with every kind of thing in it at once. */
 function busyWorld(now: number): WorldState {
@@ -230,6 +232,30 @@ describe('renderers', () => {
       expect(buf.length).toBe(columns * H)
       expect(packCells(buf, columns, H, columns, rows).length).toBe(Math.ceil((columns * rows * 12) / 3) * 4)
     }
+  })
+
+  test('halving keeps eyes, stars and lines, and drops nothing to the sky', () => {
+    const SKY = 0x6fa8ff
+    const ORANGE = 0xd97757
+    const BLACK = 0x1b1b1b
+    const STAR = 0xffffff
+    // Three 2x2 blocks side by side: an eye beside a cheek, one star in the sky, plain sky.
+    const W = 6
+    const buf = Uint32Array.from([ORANGE, BLACK, SKY, SKY, SKY, SKY, ORANGE, BLACK, SKY, STAR, SKY, SKY])
+    const mask = Uint8Array.from([1, 1, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0])
+    expect([...downsample2(buf, mask, W, 2)]).toEqual([BLACK, STAR, SKY])
+  })
+
+  test('the terminal can dim the ground and leave Clawd as he is', () => {
+    const w = turnStart(initialWorld(8, 0, T0), T0)
+    const scene = composeScene(w, T0, 120, 24, 0)
+    const bright = rasterize(scene, T0)
+    const dim = rasterize(scene, T0, { groundShade: 0.5 })
+    const groundRow = layoutFor(120, 24).groundBase + 2
+    const i = groundRow * 120 + 3
+    expect(luma(dim[i] ?? 0) < luma(bright[i] ?? 0)).toBe(true)
+    const clawdColor = 0xd97757
+    expect([...bright].filter(c => c === clawdColor).length).toBe([...dim].filter(c => c === clawdColor).length)
   })
 
   test('base64 encodes as the standard does', () => {

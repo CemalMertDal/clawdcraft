@@ -1,5 +1,6 @@
-// The terminal's renderer: the scene drawn into a pixel buffer, two pixels
-// per cell (the upper half block's foreground over its background).
+// The terminal's renderer: the scene drawn into a pixel buffer, shrunk 2:1
+// so it sits about as large as the desktop's, then two pixels per cell (the
+// upper half block's foreground over its background).
 
 import type { Scene } from './scene'
 import { frameAt, sample } from './scene'
@@ -8,12 +9,28 @@ import type { Tile } from './world'
 
 const UPPER_HALF = 0x2580
 
-export function rasterize(scene: Scene, now: number): Uint32Array {
+export type RasterOptions = {
+  /** Multiplies the ground's colors (grass, dirt, trees, plants): below 1 darkens them. */
+  groundShade?: number
+  /** Filled with 1 where something was drawn over the sky, for `downsample2`. */
+  mask?: Uint8Array
+}
+
+export function rasterize(scene: Scene, now: number, opts: RasterOptions = {}): Uint32Array {
   const { W, H } = scene
   const buf = new Uint32Array(W * H)
   for (let y = 0; y < H; y++) {
     const c = blend(scene.skyTop, scene.skyBottom, H > 1 ? y / (H - 1) : 0)
     buf.fill(c, y * W, (y + 1) * W)
+  }
+  const mask = opts.mask
+  const shade = opts.groundShade ?? 1
+  const ground = (c: number) => (shade === 1 ? c : blend(c, 0x000000, 1 - shade))
+  const put = (i: number, c: number) => {
+    buf[i] = c
+    if (mask) {
+      mask[i] = 1
+    }
   }
   const cam = Math.floor(scene.camX)
   const drawTiles = (tiles: readonly Tile[]) => {
@@ -29,7 +46,7 @@ export function rasterize(scene: Scene, now: number): Uint32Array {
           const wx = x + cam
           const c = tex.px[ty * tex.w + (((wx % tex.w) + tex.w) % tex.w)] ?? -1
           if (c >= 0) {
-            buf[y * W + x] = c
+            put(y * W + x, ground(c))
           }
         }
       }
@@ -55,7 +72,7 @@ export function rasterize(scene: Scene, now: number): Uint32Array {
         const y1 = Math.min(H, oy + a.rect.h)
         for (let y = Math.max(0, oy); y < y1; y++) {
           for (let x = Math.max(0, ox); x < x1; x++) {
-            buf[y * W + x] = a.rect.color
+            put(y * W + x, a.rect.color)
           }
         }
         continue
@@ -65,6 +82,7 @@ export function rasterize(scene: Scene, now: number): Uint32Array {
         continue
       }
       const s = sprite(name)
+      const tint = a.isGround ? ground : (c: number) => c
       for (let sy = 0; sy < s.h; sy++) {
         const y = oy + sy
         if (y < 0 || y >= H) {
@@ -77,7 +95,7 @@ export function rasterize(scene: Scene, now: number): Uint32Array {
           }
           const c = s.px[sy * s.w + (a.flip ? s.w - 1 - sx : sx)] ?? -1
           if (c >= 0) {
-            buf[y * W + x] = c
+            put(y * W + x, tint(c))
           }
         }
       }
@@ -90,6 +108,50 @@ export function rasterize(scene: Scene, now: number): Uint32Array {
   drawActorsBelow(Number.POSITIVE_INFINITY)
 
   return buf
+}
+
+const luma = (c: number) => ((c >> 16) & 255) * 0.3 + ((c >> 8) & 255) * 0.59 + (c & 255) * 0.11
+
+/**
+ * Halves a buffer each way. Each 2x2 block keeps what was drawn over the
+ * sky if anything was, so thin things (a fishing line, a star) survive;
+ * among those its most common color, and on a tie the darker one, so an
+ * eye beside a cheek stays an eye.
+ */
+export function downsample2(buf: Uint32Array, mask: Uint8Array, W: number, H: number): Uint32Array {
+  const w = W >> 1
+  const h = H >> 1
+  const out = new Uint32Array(w * h)
+  const picks: number[] = []
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = 2 * y * W + 2 * x
+      const block = [i, i + 1, i + W, i + W + 1]
+      const drawn = block.filter(j => mask[j] === 1)
+      const from = drawn.length > 0 ? drawn : block
+      picks.length = 0
+      for (const j of from) {
+        picks.push(buf[j] ?? 0)
+      }
+      let best = picks[0] ?? 0
+      let bestCount = 0
+      for (const c of picks) {
+        let count = 0
+        for (const d of picks) {
+          if (d === c) {
+            count++
+          }
+        }
+        if (count > bestCount || (count === bestCount && luma(c) < luma(best))) {
+          best = c
+          bestCount = count
+        }
+      }
+      out[y * w + x] = drawn.length > 0 ? best : (buf[i] ?? 0)
+    }
+  }
+
+  return out
 }
 
 /** Packs a buffer `columns` wide and `rows * 2` tall as a Raster's `cells`. */
